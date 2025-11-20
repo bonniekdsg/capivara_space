@@ -24,7 +24,7 @@
         }
         #instructions {
             position: absolute;
-            bottom: 20px;
+            bottom: 40px; /* Subi um pouco para dar espaço ao rodapé */
             color: #888;
             font-size: 12px;
             text-align: center;
@@ -33,6 +33,25 @@
             text-transform: uppercase;
             letter-spacing: 2px;
             text-shadow: 2px 2px #000;
+            pointer-events: none; /* Permite clicar através do texto se necessário */
+        }
+        #footer {
+            position: absolute;
+            bottom: 10px;
+            width: 100%;
+            text-align: center;
+            color: #666;
+            font-size: 10px;
+            z-index: 10;
+        }
+        #footer a {
+            color: #00ffff;
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+        #footer a:hover {
+            color: #ff00ff;
+            text-decoration: underline;
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
@@ -40,6 +59,10 @@
 <body>
 
 <div id="instructions">Use as SETAS ou as teclas W, A, S, D para mover | ESPAÇO para atirar</div>
+
+<div id="footer">
+    Desenvolvido pelo <a href="https://seringallab.mpac.mp.br/" target="_blank">SeringalLab</a>. Todos os direitos reservados 2025.
+</div>
 
 <script>
 /**
