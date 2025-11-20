@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Jogo de Nave Pixel Art + Áudio</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #1a1a1a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Press Start 2P', cursive; /* Fonte Pixelada */
+            overflow: hidden;
+            user-select: none;
+        }
+        canvas {
+            box-shadow: 0 0 30px #00ffff, 0 0 60px #ff00ff; /* Efeito Neon mais forte */
+            border: 4px solid #333;
+            border-radius: 4px;
+        }
+        #instructions {
+            position: absolute;
+            bottom: 20px;
+            color: #888;
+            font-size: 12px;
+            text-align: center;
+            width: 100%;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            text-shadow: 2px 2px #000;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+</head>
+<body>
+
+<div id="instructions">Use as SETAS ou as teclas W, A, S, D para mover | ESPAÇO para atirar</div>
+
+<script>
+/**
+ * --- SISTEMA DE ÁUDIO RETRO (Sintetizador) ---
+ * Cria sons matematicamente para não precisar de arquivos externos.
+ */
+const RetroAudio = {
+    ctx: null,
+    
+    init: function() {
+        if (!this.ctx) {
+            this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+    },
+
+    // Som de Tiro (Laser)
+    playLaser: function() {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        
+        osc.type = 'sawtooth'; // Onda serrilhada (agressiva)
+        osc.frequency.setValueAtTime(800, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(100, this.ctx.currentTime + 0.2);
+        
+        gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.2);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.2);
+    },
+
+    // Som de Explosão (Ruído Branco)
+    playExplosion: function() {
+        if (!this.ctx) return;
+        const bufferSize = this.ctx.sampleRate * 0.5; // 0.5 segundos
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+
+        // Preenche com barulho aleatório
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+        }
+
+        const noise = this.ctx.createBufferSource();
+        noise.buffer = buffer;
+        
+        const gain = this.ctx.createGain();
+        gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.5);
+
+        noise.connect(gain);
+        gain.connect(this.ctx.destination);
+        noise.start();
+    },
+
+    // Som de Selecionar/Start
+    playSelect: function() {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        
+        osc.type = 'square'; // Onda quadrada (estilo 8-bit clássico)
+        osc.frequency.setValueAtTime(440, this.ctx.currentTime);
+        osc.frequency.linearRampToValueAtTime(880, this.ctx.currentTime + 0.1);
+        
+        gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 0.1);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.1);
+    },
+
+    // Som de Dano/Impacto simples
+    playHit: function() {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(150, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(50, this.ctx.currentTime + 0.1);
+        
+        gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 0.1);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.1);
+    },
+
+    // Som de Vazio / Sem Energia
+    playEmpty: function() {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(200, this.ctx.currentTime);
+        
+        gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.05); // Bem curto
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.05);
+    },
+
+    // --- NOVOS SONS GERADOS ---
+    
+    // Trilha Sonora Ambiental (Drone Espacial)
+    bgmOsc: [],
+    bgmGain: null,
+    playTheme: function() {
+        if (!this.ctx) this.init();
+        if (this.bgmOsc.length > 0) return; // Já tocando
+
+        this.bgmGain = this.ctx.createGain();
+        this.bgmGain.gain.setValueAtTime(0.1, this.ctx.currentTime); // Volume baixo ambiente
+        this.bgmGain.connect(this.ctx.destination);
+
+        // Cria 3 osciladores para acorde drone
+        const freqs = [110, 112, 55]; // Lá grave desafinado + Subgrave
+        
+        freqs.forEach(f => {
+            const osc = this.ctx.createOscillator();
+            osc.type = 'sine';
+            osc.frequency.value = f;
+            osc.connect(this.bgmGain);
+            osc.start();
+            this.bgmOsc.push(osc);
+        });
+    },
+
+    // Novo Som de Confirmação (Futurista)
+    playConfirmNew: function() {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(400, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1200, this.ctx.currentTime + 0.1);
+        
+        gain.gain.setValueAtTime(0.3, this.ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 0.3);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.3);
+    },
+
+    // Som de Motor (Ruído Filtrado)
+    thrusterOsc: null,
+    thrusterGain: null,
+    startThruster: function() {
+        if (!this.ctx) return;
+        if (this.thrusterOsc) return; // Já ligado
+
+        // Cria ruído branco (simplificado usando oscilador aleatório)
+        const bufferSize = this.ctx.sampleRate * 2; 
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+        }
+
+        this.thrusterOsc = this.ctx.createBufferSource();
+        this.thrusterOsc.buffer = buffer;
+        this.thrusterOsc.loop = true;
+
+        // Filtro LowPass para deixar grave (parecer motor)
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = 200; 
+
+        this.thrusterGain = this.ctx.createGain();
+        this.thrusterGain.gain.setValueAtTime(0.3, this.ctx.currentTime); // Aumentado de 0.15 para 0.3
+
+        this.thrusterOsc.connect(filter);
+        filter.connect(this.thrusterGain);
+        this.thrusterGain.connect(this.ctx.destination);
+        this.thrusterOsc.start();
+    },
+
+    stopThruster: function() {
+        if (this.thrusterOsc) {
+            // Fade out suave
+            this.thrusterGain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 0.1);
+            this.thrusterOsc.stop(this.ctx.currentTime + 0.1);
+            this.thrusterOsc = null;
+            this.thrusterGain = null;
+        }
+    }
+};
+
+
+/**
+ * CONFIGURAÇÕES GERAIS DO JOGO
+ */
+const CONFIG = {
+    width: 800,
+    height: 600,
+    speedBase: 200,
+    bulletSpeed: 500,
+    colors: {
+        ship: 0x00ff00,        // Verde Neon
+        bullet: 0xffff00,      // Amarelo
+        asteroidSmall: 0xa0522d, 
+        asteroidLarge: 0x8b4513, 
+        meteor: 0x555555,      
+    }
+};
+
+/**
+ * CENA 1: MENU INICIAL
+ */
+class MenuScene extends Phaser.Scene {
+    constructor() { super('MenuScene'); }
+
+    preload() {
+        // Carrega as imagens reais
+        this.load.image('capa_jogo', 'assets/capa.png'); 
+        this.load.image('ship', 'assets/spaceship.png');
+        this.load.image('ship2', 'assets/spaceship2.png'); 
+        this.load.image('asteroid', 'assets/asteroide.png');
+        this.load.image('meteor', 'assets/asteroide2.png');
+        this.load.image('laser', 'assets/tiro.png'); 
+        this.load.image('laser_special', 'assets/tiro_especial.png'); 
+        
+        // Carrega imagens da HISTÓRIA
+        this.load.image('cap01', 'assets/cap01.png');
+        this.load.image('cap02', 'assets/cap02.png');
+        this.load.image('cap03', 'assets/cap03.png');
+        this.load.image('cap04', 'assets/cap04.png');
+
+        this.generateTextures(); 
+    }
+
+    create() {
+        // Inicializa áudio (RetroAudio ainda usado para efeitos antigos)
+        this.input.on('pointerdown', () => RetroAudio.init());
+        this.input.keyboard.on('keydown', () => {
+            RetroAudio.init();
+            RetroAudio.playTheme(); // Inicia trilha ao interagir
+        });
+
+        // 1. COR DE FUNDO (Para a área do botão embaixo) (Para a área do botão embaixo)
+        this.add.rectangle(0, 0, 800, 600, 0x000000).setOrigin(0);
+
+        // 2. POSICIONAR A IMAGEM NO TOPO
+        // x=400 (centro horizontal), y=225 (metade da altura da imagem 450)
+        // Isso faz a imagem encostar no topo (y=0) e ir até y=450
+        this.add.image(400, 225, 'capa_jogo');
+
+        // 3. POSICIONAR O TEXTO/BOTÃO NA ÁREA DE BAIXO
+        // A área livre começa no pixel 450 e vai até 600. O centro disso é 525.
+        const startText = this.add.text(400, 525, 'PRESSIONE ESPAÇO', {
+            fontSize: '20px',
+            fill: '#ffffff',
+            fontFamily: '"Press Start 2P"',
+            stroke: '#000',
+            strokeThickness: 4,
+            shadow: { offsetX: 2, offsetY: 2, color: '#ff00ff', blur: 0, fill: true }
+        }).setOrigin(0.5);
+
+        // Efeito de piscar no texto
+        this.tweens.add({
+            targets: startText,
+            alpha: 0.2, // Não apaga totalmente, fica transparente
+            duration: 800,
+            yoyo: true,
+            loop: -1
+        });
+
+        // Input para iniciar
+        this.input.keyboard.once('keydown-SPACE', () => {
+            RetroAudio.init(); 
+            RetroAudio.ctx.resume().then(() => {
+                // Som de Confirmação Gerado
+                RetroAudio.playConfirmNew();
+                
+                // Vai para a História antes do jogo
+                this.scene.start('StoryScene');
+            });
+        });
+    }
+
+    generateTextures() {
+        const gfx = this.make.graphics();
+
+        // --- NAVE e ASTEROIDES agora usam imagens PNG ---
+        // (Removido código de geração procedural da Nave e Asteroides)
+
+        // Laser agora usa imagem tiro.png
+        // (Removido código de geração procedural do Laser)
+
+        // Meteoro agora usa imagem asteroide2.png (Removido gerador procedural)
+    }
+}
+
+/**
+ * CENA 1.5: HISTÓRIA (STORY MODE)
+ */
+class StoryScene extends Phaser.Scene {
+    constructor() { super('StoryScene'); }
+
+    create() {
+        // Dados da História
+        this.slides = [
+            {
+                img: 'cap01',
+                title: '1. A Era de Ouro',
+                text: 'Tudo começou no nosso paraíso verde. A vida era simples e perfeita: águas calmas, grama fresca e o calor do sol. Nós vivíamos em harmonia, acreditando que a paz do nosso lar duraria para sempre.'
+            },
+            {
+                img: 'cap02',
+                title: '2. O Dia do Fogo',
+                text: 'Mas o céu nos traiu. Sem aviso, o horizonte brilhou com uma luz terrível. Uma chuva de asteroides rasgou a atmosfera, transformando nosso santuário em chamas. Não havia para onde correr... restava apenas uma esperança arriscada.'
+            },
+            {
+                img: 'cap03',
+                title: '3. A Descoberta Ancestral',
+                text: 'Em meio à fuga desesperada pela mata, tropecei em algo inacreditável. Escondida sob séculos de musgo e vegetação, estava uma relíquia de uma civilização antiga: uma nave estelar. Seria o destino? Era a minha única chance.'
+            },
+            {
+                img: 'cap04',
+                title: '4. O Último Adeus',
+                text: 'Consegui reativar os motores antigos. Enquanto a nave alcançava a órbita, olhei para trás pelo vidro frio. Meu belo lar... agora apenas fogo e ruínas. Com o coração pesado, deixo meu mundo para trás e encaro o vazio do espaço em busca de um novo começo.'
+            }
+        ];
+
+        this.currentSlide = 0;
+
+        // 1. Fundo Preto (Area de baixo)
+        this.add.rectangle(0, 0, 800, 600, 0x000000).setOrigin(0);
+
+        // 2. Elementos Visuais (Inicialização)
+        // Imagem (Topo)
+        this.storyImage = this.add.image(400, 225, this.slides[0].img);
+        
+        // Título
+        this.titleText = this.add.text(40, 460, this.slides[0].title, {
+            fontSize: '18px',
+            fill: '#ffff00',
+            fontFamily: '"Press Start 2P"'
+        });
+
+        // Texto Descritivo
+        this.descText = this.add.text(40, 495, this.slides[0].text, {
+            fontSize: '11px',
+            fill: '#ffffff',
+            fontFamily: '"Press Start 2P"',
+            wordWrap: { width: 720 }, // Quebra de linha automática
+            lineSpacing: 6
+        });
+
+        // Instrução de Navegação
+        this.add.text(780, 580, 'ESPAÇO >', {
+            fontSize: '10px', fill: '#888', fontFamily: '"Press Start 2P"'
+        }).setOrigin(1);
+
+        // Input para Avançar
+        this.input.keyboard.on('keydown-SPACE', () => this.nextSlide());
+        this.input.on('pointerdown', () => this.nextSlide());
+    }
+
+    nextSlide() {
+        this.currentSlide++;
+
+        if (this.currentSlide < this.slides.length) {
+            // Atualiza Conteúdo
+            const data = this.slides[this.currentSlide];
+            
+            this.storyImage.setTexture(data.img);
+            this.titleText.setText(data.title);
+            this.descText.setText(data.text);
+            
+            // Som de avanço
+            RetroAudio.playConfirmNew();
+        } else {
+            // Fim da História -> Começa o Jogo
+            this.scene.start('GameScene');
+        }
+    }
+}
+
+/**
+ * CENA 2: O JOGO EM SI
+ */
+class GameScene extends Phaser.Scene {
+    constructor() { super('GameScene'); }
+
+    create() {
+        // Estado
+        this.score = 0;
+        this.lives = 3;
+        this.maxEnergy = 10;
+        this.energy = 10;
+        this.gameSpeedMultiplier = 1.0;
+        this.isGameOver = false;
+        this.spawnTimer = 1500;
+        this.nextSpawnTime = 0;
+        this.lastFired = 0;
+
+        // Variáveis do Tiro Especial
+        this.chargeStartTime = 0;
+        this.isCharging = false;
+        
+        // Inputs
+        this.cursors = this.input.keyboard.createCursorKeys();
+        this.wasd = this.input.keyboard.addKeys({
+            up: Phaser.Input.Keyboard.KeyCodes.W,
+            down: Phaser.Input.Keyboard.KeyCodes.S,
+            left: Phaser.Input.Keyboard.KeyCodes.A,
+            right: Phaser.Input.Keyboard.KeyCodes.D
+        });
+        this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+        
+        // Fundo
+        this.stars = this.add.group();
+        for(let i=0; i<50; i++) {
+            const star = this.add.rectangle(
+                Phaser.Math.Between(0, 800),
+                Phaser.Math.Between(0, 600),
+                2, 2, 0xffffff
+            );
+            this.stars.add(star);
+        }
+
+        // Jogador
+        this.player = this.physics.add.sprite(100, 300, 'ship');
+        this.player.setCollideWorldBounds(true);
+        this.player.setData('invulnerable', false);
+
+        // Física
+        this.lasers = this.physics.add.group({ defaultKey: 'laser', maxSize: 20 });
+        this.enemies = this.physics.add.group();
+
+        this.physics.add.overlap(this.lasers, this.enemies, this.hitEnemy, null, this);
+        this.physics.add.overlap(this.player, this.enemies, this.hitPlayer, null, this);
+
+        // HUD com fonte pixelada
+        this.scoreText = this.add.text(16, 16, 'PONTOS: 0', { 
+            fontSize: '16px', 
+            fill: '#fff', 
+            fontFamily: '"Press Start 2P"' 
+        });
+        this.livesText = this.add.text(16, 40, 'VIDAS: 3', { 
+            fontSize: '16px', 
+            fill: '#0f0', 
+            fontFamily: '"Press Start 2P"' 
+        });
+        
+        // --- BARRA DE ENERGIA ---
+        this.maxEnergy = 100;
+        this.energy = 100;
+        this.energyBarGraphics = this.add.graphics();
+        this.updateEnergyBar();
+
+        // Tween de recarga (piscar)
+        this.rechargeTween = this.tweens.add({
+            targets: this.energyBarGraphics,
+            alpha: 0.5,
+            duration: 200,
+            yoyo: true,
+            loop: -1,
+            paused: true
+        });
+
+        // Recarga de Energia Automática (5% por segundo = 1% a cada 200ms)
+        this.time.addEvent({
+            delay: 200, 
+            callback: () => {
+                if (this.energy < this.maxEnergy && !this.isGameOver && !this.isPaused) {
+                    this.energy += 1; // +1% a cada 200ms = 5% por segundo
+                    if (this.energy > this.maxEnergy) this.energy = this.maxEnergy;
+                    
+                    this.updateEnergyBar();
+                    
+                    // Ativa efeito de piscar se estiver recarregando
+                    if (!this.rechargeTween.isPlaying()) {
+                        this.rechargeTween.play();
+                    }
+                } else if (this.energy >= this.maxEnergy) {
+                    // Para de piscar quando cheio
+                    if (this.rechargeTween.isPlaying()) {
+                        this.rechargeTween.pause();
+                        this.energyBarGraphics.alpha = 1;
+                    }
+                }
+            },
+            loop: true
+        });
+
+        // --- MENU DE PAUSA (MODAL ESTILIZADO) ---
+        this.isPaused = false;
+        this.pauseKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.P);
+        this.pauseGroup = this.add.group();
+
+        // Fundo semitransparente tela toda
+        const overlay = this.add.rectangle(0, 0, 800, 600, 0x000000, 0.7).setOrigin(0);
+
+        // Container do Modal (Janela)
+        const modalBg = this.add.rectangle(400, 300, 400, 300, 0x000044).setStrokeStyle(4, 0x00ffff);
+        
+        // Título "PAUSADO"
+        const pauseTitle = this.add.text(400, 200, 'PAUSADO', { 
+            fontSize: '32px', 
+            fill: '#00ffff', 
+            fontFamily: '"Press Start 2P"',
+            shadow: { offsetX: 3, offsetY: 3, color: '#000000', blur: 0, fill: true }
+        }).setOrigin(0.5);
+
+        // Botão Continuar
+        const btnResume = this.add.text(400, 280, 'CONTINUAR', { 
+            fontSize: '18px', 
+            fill: '#ffffff', 
+            fontFamily: '"Press Start 2P"',
+            backgroundColor: '#333333', 
+            padding: { x: 20, y: 10 }
+        }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+        // Botão Reiniciar
+        const btnRestart = this.add.text(400, 350, 'REINICIAR', { 
+            fontSize: '18px', 
+            fill: '#ff4444', 
+            fontFamily: '"Press Start 2P"',
+            backgroundColor: '#333333', 
+            padding: { x: 20, y: 10 }
+        }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+        this.pauseGroup.add(overlay);
+        this.pauseGroup.add(modalBg);
+        this.pauseGroup.add(pauseTitle);
+        this.pauseGroup.add(btnResume);
+        this.pauseGroup.add(btnRestart);
+
+        // Esconde inicialmente
+        this.pauseGroup.setVisible(false);
+
+        // Eventos do Pause
+        this.pauseKey.on('down', () => this.togglePause());
+
+        btnResume.on('pointerdown', () => this.togglePause());
+        
+        btnRestart.on('pointerdown', () => {
+            this.scene.restart();
+        });
+
+        // Efeito de hover nos botões
+        [btnResume, btnRestart].forEach(btn => {
+            btn.on('pointerover', () => btn.setStyle({ fill: '#ff0' }));
+            btn.on('pointerout', () => btn.setStyle({ fill: btn === btnRestart ? '#f00' : '#0f0' }));
+        });
+
+        // Dificuldade
+        this.difficultyEvent = this.time.addEvent({
+            delay: 30000,
+            callback: this.increaseDifficulty,
+            callbackScope: this,
+            loop: true
+        });
+    }
+
+    togglePause() {
+        if (this.isGameOver) return;
+
+        this.isPaused = !this.isPaused;
+
+        if (this.isPaused) {
+            this.physics.pause();
+            this.difficultyEvent.paused = true;
+            this.pauseGroup.setVisible(true);
+            this.pauseGroup.getChildren().forEach(child => {
+                // Hack para garantir que elementos interativos recebam cliques mesmo com jogo pausado
+                // Em Phaser, physics.pause() não para inputs de UI, então isso deve funcionar direto
+                if (child.setInteractive) child.setInteractive();
+            });
+        } else {
+            this.physics.resume();
+            this.difficultyEvent.paused = false;
+            this.pauseGroup.setVisible(false);
+        }
+    }
+
+    update(time, delta) {
+        if (this.isGameOver || this.isPaused) return;
+
+        // Movimento
+        this.player.setVelocity(0);
+        const speed = 300;
+        let isMoving = false;
+
+        if (this.cursors.left.isDown || this.wasd.left.isDown) {
+            this.player.setVelocityX(-speed);
+            isMoving = true;
+        }
+        else if (this.cursors.right.isDown || this.wasd.right.isDown) {
+            this.player.setVelocityX(speed);
+            isMoving = true;
+        }
+
+        if (this.cursors.up.isDown || this.wasd.up.isDown) {
+            this.player.setVelocityY(-speed);
+            isMoving = true;
+        }
+        else if (this.cursors.down.isDown || this.wasd.down.isDown) {
+            this.player.setVelocityY(speed);
+            isMoving = true;
+        }
+
+        // Controle do som do motor (Gerado)
+        if (isMoving) {
+            RetroAudio.startThruster();
+        } else {
+            RetroAudio.stopThruster();
+        }
+
+        // Troca de Sprite (Animação simples)
+        if (isMoving) {
+            if (this.player.texture.key !== 'ship2') this.player.setTexture('ship2');
+        } else {
+            if (this.player.texture.key !== 'ship') this.player.setTexture('ship');
+        }
+
+        // Tiro e Carregamento
+        if (this.cursors.space.isDown || this.spaceKey.isDown) {
+            
+            // 1. Inicia contagem se não estiver carregando
+            if (!this.isCharging) {
+                this.isCharging = true;
+                this.chargeStartTime = time;
+            }
+
+            const chargeDuration = time - this.chargeStartTime;
+
+            // 2. Feedback Visual de Carregamento (Após 3s)
+            if (chargeDuration >= 3000) {
+                // Pisca em VERMELHO INTENSO
+                if (time % 500 < 250) {
+                    this.player.setTint(0xff0000); 
+                } else {
+                    this.player.clearTint();
+                }
+            } 
+        } 
+        // Soltou o Espaço?
+        else {
+            if (this.isCharging) {
+                const chargeDuration = time - this.chargeStartTime;
+                
+                // Limpa tint (vermelho) imediatamente
+                this.player.clearTint();
+
+                // DECISÃO: Tiro Comum ou Especial?
+                if (chargeDuration >= 3000) {
+                    // --- TIRO ESPECIAL (Custa 100%) ---
+                    if (this.energy >= 100) {
+                        this.fireSpecialShot();
+                    } else {
+                        // Som de sem energia
+                        RetroAudio.playEmpty();
+                    }
+                } else {
+                    // --- TIRO COMUM (Custa 10%) ---
+                    if (time > this.lastFired) {
+                         if (this.energy >= 10) {
+                            this.fireNormalShot(time);
+                         } else {
+                            RetroAudio.playEmpty();
+                         }
+                    }
+                }
+                
+                // Reseta estado
+                this.isCharging = false;
+            }
+        }
+
+        // Limpeza de Lasers
+        this.lasers.children.iterate((laser) => {
+            if (laser && laser.x > 800) {
+                laser.setActive(false).setVisible(false);
+            }
+        });
+
+        // Spawning
+        if (time > this.nextSpawnTime) {
+            this.spawnEnemy();
+            this.nextSpawnTime = time + (this.spawnTimer / this.gameSpeedMultiplier);
+        }
+
+        // Background e Inimigos
+        this.stars.children.iterate((star) => {
+            star.x -= 2 * this.gameSpeedMultiplier;
+            if (star.x < 0) star.x = 800;
+        });
+
+        this.enemies.children.iterate((enemy) => {
+            if (enemy) {
+                if (enemy.x < -50) {
+                    if (enemy.active) {
+                        this.updateScore(10); 
+                    }
+                    enemy.destroy();
+                }
+            }
+        });
+    }
+
+    spawnEnemy() {
+        const typeRoll = Phaser.Math.Between(1, 100);
+        let type, key, hp, speed, points;
+        let scale = 1; // Escala padrão
+
+        if (typeRoll < 60) { 
+            // Pequeno: Usa a imagem do asteroide reduzida
+            key = 'asteroid'; hp = 1; speed = 200; points = 50; type = 'small';
+            scale = 0.5; 
+        } else if (typeRoll < 85) { 
+            // Grande: Usa a imagem do asteroide normal
+            key = 'asteroid'; hp = 3; speed = 100; points = 150; type = 'large';
+            scale = 1.0;
+        } else { 
+            key = 'meteor'; hp = 999; speed = 350; points = 0; type = 'meteor';
+        }
+
+        const y = Phaser.Math.Between(50, 550);
+        const enemy = this.enemies.create(850, y, key);
+        enemy.setScale(scale); // Aplica a escala (importante para diferenciar pequeno/grande)
+        
+        enemy.setData('hp', hp);
+        enemy.setData('points', points);
+        enemy.setData('type', type);
+        enemy.setVelocityX(-speed * this.gameSpeedMultiplier);
+    }
+
+    updateEnergyBar() {
+        this.energyBarGraphics.clear();
+        
+        // Fundo da barra (Moldura)
+        this.energyBarGraphics.lineStyle(2, 0xffffff);
+        this.energyBarGraphics.strokeRect(16, 70, 200, 16);
+        
+        // Preenchimento
+        const percent = this.energy / 100;
+        const width = 200 * percent;
+        
+        if (width > 0) {
+            // Cor Gradiente (Lógica simplificada: Verde > Amarelo > Vermelho)
+            let color = 0x00ff00; // Verde
+            if (percent < 0.5) color = 0xffff00; // Amarelo
+            if (percent < 0.2) color = 0xff0000; // Vermelho
+
+            this.energyBarGraphics.fillStyle(color);
+            this.energyBarGraphics.fillRect(16, 70, width, 16);
+        }
+    }
+
+    fireNormalShot(time) {
+        const laser = this.lasers.get(this.player.x + 20, this.player.y);
+        if (laser) {
+            laser.setActive(true).setVisible(true);
+            laser.setVelocityX(CONFIG.bulletSpeed);
+            
+            // Consome Energia (10%)
+            this.energy -= 10;
+            this.updateEnergyBar();
+            
+            // TOCA O SOM DE TIRO
+            RetroAudio.playLaser();
+            
+            this.lastFired = time + 250;
+        }
+    }
+
+    fireSpecialShot() {
+        // Cria o tiro especial
+        const special = this.lasers.create(this.player.x + 40, this.player.y, 'laser_special');
+        if (special) {
+            special.setScale(1.5); // Um pouco maior
+            special.setVelocityX(800); // Muito rápido
+            special.setData('isSpecial', true); // Flag para identificar colisão
+
+            // Consome Energia TOTAL (100%)
+            this.energy = 0; 
+            this.updateEnergyBar();
+
+            // Som diferente + Explosão na nave
+            RetroAudio.playExplosion(); 
+            this.createExplosion(this.player.x, this.player.y); // Animação de explosão ao usar
+        }
+    }
+
+    hitEnemy(laser, enemy) {
+        if (!laser.active || !enemy.active) return;
+
+        const isSpecial = laser.getData('isSpecial');
+
+        // Se NÃO for especial, o tiro some. Se FOR especial, ele atravessa (não desativa o laser).
+        if (!isSpecial) {
+            laser.setActive(false).setVisible(false);
+        }
+
+        // Meteoro
+        if (enemy.getData('type') === 'meteor') {
+            // Especial destrói até meteoro? Vamos dizer que sim para ser recompensador
+            if (isSpecial) {
+                this.updateScore(100);
+                this.createExplosion(enemy.x, enemy.y);
+                enemy.destroy();
+                return;
+            }
+
+            // SOM DE IMPACTO METÁLICO (USAMOS O HIT SIMPLES AQUI)
+            RetroAudio.playHit();
+            this.tweens.add({ targets: enemy, x: enemy.x + 5, duration: 50, yoyo: true });
+            return;
+        }
+
+        // Asteroide normal
+        // Se for especial, mata instantaneamente (dano 999)
+        let damage = isSpecial ? 999 : 1;
+        let hp = enemy.getData('hp');
+        hp -= damage;
+        
+        enemy.setData('hp', hp);
+        
+        // Feedback
+        enemy.setTint(0xff0000);
+        this.time.delayedCall(100, () => enemy.clearTint());
+
+        if (hp <= 0) {
+            // SOM DE EXPLOSÃO
+            RetroAudio.playExplosion();
+            
+            this.updateScore(enemy.getData('points'));
+            this.createExplosion(enemy.x, enemy.y);
+            enemy.destroy();
+        } else {
+            // SOM DE IMPACTO (Dano mas não destruiu)
+            RetroAudio.playHit();
+        }
+    }
+
+    hitPlayer(player, enemy) {
+        if (this.player.getData('invulnerable') || this.isGameOver) return;
+
+        this.lives--;
+        this.livesText.setText('VIDAS: ' + this.lives);
+        
+        if (enemy.getData('type') !== 'meteor') {
+            // SOM DE EXPLOSÃO (Inimigo explodiu na nave)
+            RetroAudio.playExplosion();
+            this.createExplosion(enemy.x, enemy.y);
+            enemy.destroy();
+        } else {
+            // SOM DE IMPACTO FORTE (Meteoro)
+            RetroAudio.playHit();
+        }
+
+        if (this.lives <= 0) {
+            // SOM DE EXPLOSÃO FINAL
+            RetroAudio.playExplosion();
+            
+            // Efeito visual de explosão na posição da nave
+            this.createExplosion(this.player.x, this.player.y);
+            
+            // Esconde a nave e desativa física
+            this.player.setVisible(false);
+            this.player.body.enable = false; // Impede novas colisões
+            
+            // Pequeno delay para o jogador ver a explosão antes do Game Over
+            this.time.delayedCall(1000, () => {
+                this.gameOver();
+            });
+
+        } else {
+            // SOM DE DANO NO JOGADOR
+            RetroAudio.playHit();
+            
+            this.player.setData('invulnerable', true);
+            this.tweens.add({
+                targets: this.player,
+                alpha: 0.2,
+                duration: 200,
+                yoyo: true,
+                repeat: 5,
+                onComplete: () => {
+                    this.player.alpha = 1;
+                    this.player.setData('invulnerable', false);
+                }
+            });
+        }
+    }
+
+    updateScore(points) {
+        this.score += points;
+        this.scoreText.setText('PONTOS: ' + this.score);
+    }
+
+    createExplosion(x, y) {
+        const particles = this.add.particles(x, y, 'laser', {
+            speed: { min: 50, max: 200 },
+            angle: { min: 0, max: 360 },
+            scale: { start: 1, end: 0 },
+            blendMode: 'ADD',
+            lifespan: 300,
+            quantity: 10,
+            tint: 0xffaa00
+        });
+        this.time.delayedCall(300, () => particles.destroy());
+    }
+
+    increaseDifficulty() {
+        this.gameSpeedMultiplier += 0.1;
+        this.cameras.main.flash(500, 50, 0, 50);
+    }
+
+    gameOver() {
+        this.isGameOver = true;
+        this.physics.pause();
+        // this.player.setTint(0xff0000); // Removido pois a nave já explodiu e sumiu
+        
+        const highScore = localStorage.getItem('pixelShooterRecorde') || 0;
+        if (this.score > highScore) {
+            localStorage.setItem('pixelShooterRecorde', this.score);
+        }
+
+        this.scene.launch('GameOverScene', { 
+            score: this.score, 
+            highScore: Math.max(this.score, highScore) 
+        });
+    }
+}
+
+/**
+ * CENA 3: FIM DE JOGO
+ */
+class GameOverScene extends Phaser.Scene {
+    constructor() { super('GameOverScene'); }
+
+    create(data) {
+        this.add.rectangle(0, 0, 800, 600, 0x000000, 0.8).setOrigin(0);
+
+        this.add.text(400, 200, 'FIM DE JOGO', {
+            fontSize: '48px', 
+            fill: '#ff0000', 
+            fontFamily: '"Press Start 2P"',
+            stroke: '#fff',
+            strokeThickness: 2
+        }).setOrigin(0.5);
+
+        this.add.text(400, 300, `PONTOS: ${data.score}`, { 
+            fontSize: '24px', 
+            fill: '#fff', 
+            fontFamily: '"Press Start 2P"' 
+        }).setOrigin(0.5);
+        
+        this.add.text(400, 350, `RECORDE: ${data.highScore}`, { 
+            fontSize: '18px', 
+            fill: '#ffff00', 
+            fontFamily: '"Press Start 2P"' 
+        }).setOrigin(0.5);
+
+        const restartBtn = this.add.text(400, 450, 'PRESSIONE ESPAÇO', {
+            fontSize: '20px', 
+            fill: '#fff',
+            fontFamily: '"Press Start 2P"',
+            backgroundColor: '#333',
+            padding: { x: 10, y: 5 }
+        }).setOrigin(0.5);
+
+        this.tweens.add({
+            targets: restartBtn, alpha: 0.5, duration: 1000, yoyo: true, loop: -1
+        });
+
+        this.input.keyboard.once('keydown-SPACE', () => {
+            RetroAudio.playSelect(); // Som de restart
+            
+            // Para tudo antes de ir ao menu
+            this.scene.stop('GameOverScene');
+            this.scene.stop('GameScene'); // Remove o HUD e o jogo do fundo
+            
+            this.scene.start('MenuScene'); 
+        });
+    }
+}
+
+/**
+ * INICIALIZAÇÃO DO FRAMEWORK
+ */
+const config = {
+    type: Phaser.AUTO,
+    width: CONFIG.width,
+    height: CONFIG.height,
+    parent: 'game-container',
+    physics: {
+        default: 'arcade',
+        arcade: {
+            gravity: { y: 0 },
+            debug: false
+        }
+    },
+    scene: [MenuScene, StoryScene, GameScene, GameOverScene],
+    pixelArt: true
+};
+
+const game = new Phaser.Game(config);
+
+</script>
+</body>
+</html>
